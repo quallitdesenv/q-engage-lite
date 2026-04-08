@@ -1,0 +1,16 @@
+{
+    "app" : {
+        "name": "Q-Engage Lite",
+        "version": "1.0.0",
+        "description": "A lightweight version of Q-Engage for small to medium-sized businesses.",
+        "author": "Quallity Solutions",
+        "license": "MIT"
+    },
+    "camera" : {
+        "resolution": "1080p",
+        "frame_rate": 30,
+        "night_vision": true,
+        "motion_detection": true,
+        "rtsp_url": ""
+    }
+}
