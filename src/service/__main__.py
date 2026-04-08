@@ -10,7 +10,7 @@ from pathlib import Path
 
 def load_settings():
     """Load settings from settings.default.json"""
-    settings_path = Path(__file__).parent.parent.parent / "settings.default.json"
+    settings_path = Path(__file__).parent.parent / "settings.default.json"
     try:
         with open(settings_path, 'r') as f:
             return json.load(f)

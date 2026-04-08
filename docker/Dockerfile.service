@@ -1,0 +1,10 @@
+FROM qengage-lite-base
+
+WORKDIR /app
+
+COPY . .
+
+EXPOSE 8000
+
+# Comando para rodar o seu script principal
+CMD ["/venv/bin/python", "-m", "src.service.__main__"]

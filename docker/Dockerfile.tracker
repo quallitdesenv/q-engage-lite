@@ -1,0 +1,17 @@
+FROM qengage-lite-base
+
+WORKDIR /app
+
+ENV QT_QPA_PLATFORM=offscreen
+ENV OPENCV_VIDEOIO_PRIORITY_MSMF=0
+
+# Testa a importação do gi
+RUN python3 -c "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import GLib; print('gi working correctly')"
+
+# Copia seu projeto para dentro do container
+COPY . .
+
+EXPOSE 5001
+
+# Comando para rodar o seu script principal
+CMD ["/venv/bin/python", "-m", "src.tracker.__main__"]

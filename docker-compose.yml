@@ -1,0 +1,45 @@
+services:
+  qengage-lite-base:
+    image: qengage-lite-base
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.base
+    container_name: qengage-lite-base
+    mem_limit: 2g
+    mem_reservation: 1g
+    networks:
+      - q-engage-lite-network
+  qengage-lite-service:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.service
+    container_name: qengage-lite-service
+    mem_limit: 2g
+    mem_reservation: 1g
+    ports:
+      - '8000:8000'
+    volumes:
+      - '.:/app'
+    networks:
+      - q-engage-lite-network
+    depends_on:
+      - qengage-lite-base
+  qengage-lite-tracker:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.tracker
+    container_name: qengage-lite-tracker
+    mem_limit: 2g
+    mem_reservation: 1g
+    ports:
+      - '5000:5000'
+    volumes:
+      - '.:/app'
+    networks:
+      - q-engage-lite-network
+    depends_on:
+      - qengage-lite-base
+    
+networks:
+  q-engage-lite-network:
+    driver: bridge
