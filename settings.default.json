@@ -21,6 +21,7 @@
         }
     },
     "camera" : {
+        "id": "1",
         "resolution": "640x480",
         "frame_rate": 0.7,
         "night_vision": true,

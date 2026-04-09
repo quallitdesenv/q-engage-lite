@@ -1,6 +1,9 @@
+from collections import deque
+
 class MemoryStorage:
     data = {}
-
+    batchs = deque(maxlen=1000)  # Store last 1000 batchs for potential future use
+    slots = []
     @staticmethod
     def save(storage, key, value):
         if storage not in MemoryStorage.data:
@@ -19,3 +22,11 @@ class MemoryStorage:
     @staticmethod
     def exists(storage, key):
         return key in MemoryStorage.data.get(storage, {})
+    
+    @staticmethod
+    def save_slot(slot):
+        MemoryStorage.slots.append(slot)
+
+    @staticmethod
+    def save_batch(timestamp_batch, batch_data):
+        MemoryStorage.batchs.append((timestamp_batch, batch_data))

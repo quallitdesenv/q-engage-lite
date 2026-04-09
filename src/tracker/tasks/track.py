@@ -258,7 +258,3 @@ class TrackTask(Task):
         tracked_boxes = TrackTask._tracker.update(detections, self.frame)
         
         return tracked_boxes
-    
-    def get_track_id(self, box):
-        """Legacy method - kept for compatibility."""
-        return 0

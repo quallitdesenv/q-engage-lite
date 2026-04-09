@@ -9,9 +9,11 @@ from cv2.typing import MatLike
 from ultralytics import YOLO
 import numpy as np
 from src.core import Pipeline, Connector
+from src.core.utils.memory_storage import MemoryStorage
 from src.tracker.tasks.gender_classification import GenderClassificationTask
 from .tasks import DetectionTask, TrackTask, ShowResultsTask, StoreTask
 import json
+from datetime import datetime
 
 def process_detections(frame: MatLike, model: YOLO, classifier_path):
     pipeline = Pipeline([
@@ -52,6 +54,7 @@ def get_settings():
             }
         },
         "camera": {
+            "id": settings.get("camera",{}).get("id", "1"),
             "resolution": settings.get("camera",{}).get("resolution", "1080p"),
             "frame_rate": settings.get("camera",{}).get("frame_rate", 30),
             "night_vision": settings.get("camera",{}).get("night_vision", True),
@@ -60,6 +63,34 @@ def get_settings():
             "gstream": settings.get("camera",{}).get("gstream", False)
         }
     }
+
+def store_batch(camera_id: str, fnum: int, timestamp: int):
+    batch = {
+        "camera": {
+            "id": camera_id
+        },
+        "frames": [
+            {
+                "framenumber": fnum,
+                "time": timestamp,
+                "objects": [
+                    {
+                        "track_id": track_id,
+                        "type": "PERSON",
+                        "gender": gender.upper(),
+                        "position": position
+                    }
+                ]
+            } for track_id, position, gender in MemoryStorage.slots
+        ]
+    }
+    MemoryStorage.slots.clear()
+
+    MemoryStorage.save_batch(timestamp, batch)
+
+    with open(f'./tmp/batch_{camera_id}_{fnum}_{timestamp}.json', 'w') as f:
+        json.dump(batch, f, indent=4)
+    print(f"Batch stored: camera={camera_id} frame={fnum} time={timestamp} objects={len(batch['frames'][0]['objects'])}")
 
 def main():
     """
@@ -88,6 +119,8 @@ def main():
         )
         connector.connect(settings['camera']['rtsp_url'])
         i = 0
+        timelapse_seconds = 4
+        dtime = datetime.now()  # Inicializar antes do loop
 
         while connector.isOpened():
             i += 1
@@ -106,6 +139,14 @@ def main():
             img = cv2.resize(matrix, (width, height))
 
             process_detections(img, model, settings['app']['classifier']['source'])
+            
+            for track_id, position in MemoryStorage.all('tracks'):
+                gender = MemoryStorage.load('genders', track_id)
+                MemoryStorage.save_slot((track_id, position, gender))
+
+            if (datetime.now() - dtime).total_seconds() >= timelapse_seconds:
+                store_batch(settings['camera']["id"], i, int(datetime.now().timestamp()))
+                dtime = datetime.now()
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 connector.release()
@@ -117,9 +158,7 @@ def main():
         line = sys.exc_info()[-1].tb_lineno
         file = sys.exc_info()[-1].tb_frame.f_code.co_filename
         print(f"Error at file {file} line {line}: {e}", file=sys.stderr)
-        # print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

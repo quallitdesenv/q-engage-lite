@@ -20,6 +20,5 @@ class ShowResultsTask(Task):
                 cv2.putText(self.frame, f'Gender: {gender}', (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             cv2.imshow('Tracker Results', self.frame)
-            cv2.waitKey(1)
 
         return bag
