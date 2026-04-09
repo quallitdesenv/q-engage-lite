@@ -8,8 +8,8 @@ from cv2.typing import MatLike
 class ShowResultsTask(Task):
     local: bool = True
 
-    def __init__(self, frame: MatLike):
-        self.frame = frame
+    def __init__(self):
+        self.frame = None
 
     def run(self, bag=None):
         if bag and self.local:

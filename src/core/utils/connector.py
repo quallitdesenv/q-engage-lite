@@ -41,7 +41,8 @@ class Connector:
             return self.connection.isOpened()
         return False
 
-    def read(self) -> tuple[bool, Image.Image]:
+    def read(self) -> tuple[bool, np.ndarray]:
+        """Read frame as numpy array (RGB format) - optimized to avoid PIL conversions."""
         if self.type == Connector.StreamType.GSTREAMER:
             sample = self.connection.emit("pull-sample")
             buf = sample.get_buffer()
@@ -50,21 +51,21 @@ class Connector:
             width = caps.get_structure(0).get_value('width')
             height = caps.get_structure(0).get_value('height')
             frame = np.frombuffer(arr, np.uint8).reshape((height, width, 3))
-            frame = Image.fromarray(frame)
             return True, frame
         elif self.type == Connector.StreamType.FFMPEG:
             ret, frame = self.connection.read()
             if ret:
                 frame = cvtColor(frame, COLOR_BGR2RGB)
-                frame = Image.fromarray(frame)
             return ret, frame
         return False, None
 
-    def from_matrix(self, frame) -> Image:
-        return Image.fromarray(frame)
+    def from_matrix(self, frame: np.ndarray) -> np.ndarray:
+        """Keep as numpy array - no conversion needed."""
+        return frame
 
-    def to_matrix(self, image: Image) -> any:
-        return np.array(image)
+    def to_matrix(self, frame: np.ndarray) -> np.ndarray:
+        """Keep as numpy array - no conversion needed."""
+        return frame
 
     def release(self):
         if self.type == Connector.StreamType.GSTREAMER:

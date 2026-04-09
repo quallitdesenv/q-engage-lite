@@ -67,6 +67,46 @@ class FeatureExtractor:
             features = features.flatten()
         
         return features
+    
+    def extract_features_batch(self, images: list) -> list:
+        """Extract features from multiple images in batch for better GPU utilization."""
+        if not images:
+            return []
+        
+        # Filter out empty images
+        valid_images = []
+        valid_indices = []
+        for idx, img in enumerate(images):
+            if img.size > 0:
+                valid_images.append(img)
+                valid_indices.append(idx)
+        
+        if not valid_images:
+            return [np.zeros(1280) for _ in images]
+        
+        # Batch preprocessing
+        batch_tensors = []
+        for img in valid_images:
+            img_tensor = self.transform(img)
+            batch_tensors.append(img_tensor)
+        
+        # Stack into single batch tensor
+        batch = torch.stack(batch_tensors).to(self.device)
+        
+        # Batch inference
+        with torch.no_grad():
+            features = self.model(batch)
+            features = features.cpu().numpy()
+        
+        # Map back to original order
+        results = [np.zeros(1280) for _ in images]
+        for idx, feat_idx in enumerate(valid_indices):
+            feat = features[idx]
+            if feat.ndim != 1:
+                feat = feat.flatten()
+            results[feat_idx] = feat
+        
+        return results
 
 
 class DeepSORTTracker:
@@ -91,12 +131,9 @@ class DeepSORTTracker:
         Returns:
             List of (track_id, bbox) tuples
         """
-        # Extract features for all detections
-        detection_features = []
-        for bbox in detections:
-            crop = self._crop_bbox(frame, bbox)
-            features = self.feature_extractor.extract_features(crop)
-            detection_features.append(features)
+        # Extract features for all detections in batch (GPU optimization)
+        detection_crops = [self._crop_bbox(frame, bbox) for bbox in detections]
+        detection_features = self.feature_extractor.extract_features_batch(detection_crops)
         
         # Update existing tracks
         matched_tracks = []
@@ -223,8 +260,8 @@ class TrackTask(Task):
     # Class-level tracker to persist across frames
     _tracker = None
     
-    def __init__(self, frame):
-        self.frame = frame
+    def __init__(self):
+        self.frame = None
         
         # Initialize tracker once
         if TrackTask._tracker is None:
@@ -242,7 +279,7 @@ class TrackTask(Task):
             bag: List of YOLO detection results
             
         Returns:
-            List of (track_id, bbox) tuples
+            List of (track_id, bbox, gender) tuples
         """
         if not bag:
             return []
@@ -257,4 +294,7 @@ class TrackTask(Task):
         # Update tracker
         tracked_boxes = TrackTask._tracker.update(detections, self.frame)
         
-        return tracked_boxes
+        # Add gender as "unknown" since we removed gender classification
+        tracked_boxes_with_gender = [(track_id, bbox, "unknown") for track_id, bbox in tracked_boxes]
+        
+        return tracked_boxes_with_gender

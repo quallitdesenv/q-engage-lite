@@ -10,21 +10,12 @@ from ultralytics import YOLO
 import numpy as np
 from src.core import Pipeline, Connector
 from src.core.utils.memory_storage import MemoryStorage
-from src.tracker.tasks.gender_classification import GenderClassificationTask
 from .tasks import DetectionTask, TrackTask, ShowResultsTask, StoreTask
 import json
 from datetime import datetime
+import threading
+import queue
 
-def process_detections(frame: MatLike, model: YOLO, classifier_path):
-    pipeline = Pipeline([
-        DetectionTask(model, frame),
-        TrackTask(frame),
-        GenderClassificationTask(frame, classifier_path),
-        StoreTask(),
-        ShowResultsTask(frame)
-    ])
-
-    pipeline.run()
 
 def get_settings():
     filename = 'settings.json' if os.path.exists('settings.json') else 'settings.default.json'
@@ -51,7 +42,14 @@ def get_settings():
                 "description": settings.get("app", {}).get("classifier", {}).get("description", "A simple gender classification model based on a lightweight CNN architecture."),
                 "pretrained": settings.get("app", {}).get("classifier", {}).get("pretrained", True),
                 "source": settings.get("app", {}).get("classifier", {}).get("source", "./pretrained/gender_classifier_v1.pt")
-            }
+            },
+            "event": {
+                "driver": settings.get("event",{}).get("driver", "local"),
+                "path": settings.get("event",{}).get("path", "./tmp/events")
+            },
+            "store": {
+                "timelapse_seconds": settings.get("app",{}).get("store",{}).get("timelapse_seconds", 10)
+            },
         },
         "camera": {
             "id": settings.get("camera",{}).get("id", "1"),
@@ -64,7 +62,31 @@ def get_settings():
         }
     }
 
+# Global queue for async batch storage
+batch_queue = queue.Queue(maxsize=100)
+storage_thread = None
+
+def batch_storage_worker():
+    """Worker thread that handles async batch storage to disk."""
+    while True:
+        try:
+            item = batch_queue.get()
+            if item is None:  # Poison pill to stop the worker
+                break
+            
+            camera_id, fnum, timestamp, batch = item
+            
+            # Write to disk (non-blocking for main thread)
+            filepath = f'./tmp/batch_{camera_id}_{fnum}_{timestamp}.json'
+            with open(filepath, 'w') as f:
+                json.dump(batch, f, indent=4)
+            
+            batch_queue.task_done()
+        except Exception as e:
+            print(f"Error in storage worker: {e}", file=sys.stderr)
+
 def store_batch(camera_id: str, fnum: int, timestamp: int):
+    """Store batch asynchronously - non-blocking operation."""
     batch = {
         "camera": {
             "id": camera_id
@@ -88,19 +110,29 @@ def store_batch(camera_id: str, fnum: int, timestamp: int):
 
     MemoryStorage.save_batch(timestamp, batch)
 
-    with open(f'./tmp/batch_{camera_id}_{fnum}_{timestamp}.json', 'w') as f:
-        json.dump(batch, f, indent=4)
-    print(f"Batch stored: camera={camera_id} frame={fnum} time={timestamp} objects={len(batch['frames'][0]['objects'])}")
+    # Add to async queue instead of blocking write
+    try:
+        batch_queue.put_nowait((camera_id, fnum, timestamp, batch))
+        print(f"Batch queued: camera={camera_id} frame={fnum} time={timestamp} objects={len(batch['frames'][0]['objects'])}")
+    except queue.Full:
+        print(f"Warning: Batch queue full, dropping batch {fnum}", file=sys.stderr)
 
 def main():
     """
     Main entry point for the tracker module.
     Initializes AI model and processes video stream for edge detection and tracking.
     """
+    global storage_thread
+    
     settings = get_settings()
     print(f"{settings['app']['name']} v{settings['app']['version']}")
     print(settings['app']['description'])
     print("Initializing AI Edge Detector...")
+    
+    # Start async storage worker thread
+    storage_thread = threading.Thread(target=batch_storage_worker, daemon=True)
+    storage_thread.start()
+    print("✓ Async storage worker started")
 
     try:
         resolution = settings['camera']['resolution'].split('x')
@@ -119,8 +151,15 @@ def main():
         )
         connector.connect(settings['camera']['rtsp_url'])
         i = 0
-        timelapse_seconds = 4
-        dtime = datetime.now()  # Inicializar antes do loop
+        timelapse_seconds = settings['camera']['frame_rate'] * 10
+        dtime = datetime.now()
+
+        pipeline = Pipeline([
+            DetectionTask,
+            TrackTask,
+            StoreTask,
+            ShowResultsTask
+        ])
 
         while connector.isOpened():
             i += 1
@@ -134,12 +173,10 @@ def main():
             if not ret:
                 break
 
-            matrix = connector.to_matrix(frame)
+            img = cv2.resize(frame, (width, height))
 
-            img = cv2.resize(matrix, (width, height))
+            pipeline(img, model)
 
-            process_detections(img, model, settings['app']['classifier']['source'])
-            
             for track_id, position in MemoryStorage.all('tracks'):
                 gender = MemoryStorage.load('genders', track_id)
                 MemoryStorage.save_slot((track_id, position, gender))
@@ -158,7 +195,14 @@ def main():
         line = sys.exc_info()[-1].tb_lineno
         file = sys.exc_info()[-1].tb_frame.f_code.co_filename
         print(f"Error at file {file} line {line}: {e}", file=sys.stderr)
-        sys.exit(1)
+    finally:
+        # Cleanup async storage thread
+        print("Waiting for pending batches to be written...")
+        batch_queue.join()  # Wait for all pending items to be processed
+        batch_queue.put(None)  # Send poison pill
+        if storage_thread:
+            storage_thread.join(timeout=5)
+        print("✓ Storage worker stopped")
 
 if __name__ == "__main__":
     main()
