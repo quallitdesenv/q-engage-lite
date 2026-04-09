@@ -1,0 +1,13 @@
+# Test results - ignore all generated files
+*.jpg
+*.png
+*.txt
+*.html
+*.css
+*.js
+coverage_html/
+__pycache__/
+.pytest_cache/
+
+# Keep the directory structure
+!.gitkeep

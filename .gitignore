@@ -5,3 +5,4 @@ __pycache__/
 .venv
 build
 q_engage_lite.egg-info
+settings.json

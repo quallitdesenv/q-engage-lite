@@ -4,13 +4,28 @@
         "version": "1.0.0",
         "description": "A lightweight version of Q-Engage for small to medium-sized businesses.",
         "author": "Quallity Solutions",
-        "license": "MIT"
+        "license": "MIT",
+        "model": {
+            "name": "ssci_v2",
+            "version": "2.0",
+            "description": "State-of-the-art model for accurate people counting and demographic analysis.",
+            "pretrained": true,
+            "source": "./pretrained/yolo26m.pt"
+        },
+        "classifier": {
+            "name": "gender_classifier",
+            "version": "1.0",
+            "description": "A simple gender classification model based on a lightweight CNN architecture.",
+            "pretrained": true,
+            "source": "./pretrained/gender_classifier_v1.pt"
+        }
     },
     "camera" : {
-        "resolution": "1080p",
-        "frame_rate": 30,
+        "resolution": "640x480",
+        "frame_rate": 0.7,
         "night_vision": true,
         "motion_detection": true,
-        "rtsp_url": ""
+        "rtsp_url": "./tests/samples/video/security-footage-people-walking-shopping-footage-070595440_main_xxl.mp4",
+        "gstream": false
     }
 }
