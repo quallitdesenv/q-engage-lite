@@ -6,11 +6,11 @@
         "author": "Quallity Solutions",
         "license": "MIT",
         "model": {
-            "name": "ssci_v2",
+            "name": "yolo26m",
             "version": "2.0",
             "description": "State-of-the-art model for accurate people counting and demographic analysis.",
             "pretrained": true,
-            "source": "./pretrained/ssci_v2.pt"
+            "source": "./pretrained/yolo26m.pt"
         },
         "classifier": {
             "name": "gender_classifier",
@@ -40,15 +40,10 @@
         "gstream": false
     },
     "event": {
-        "driver": "local",
-        "path": "./tmp/events"
-    },
-    "mqtt": {
-        "enabled": false,
-        "broker": "mqtt.example.com",
-        "port": 1883,
-        "username": "mqtt_user",
-        "password": "mqtt_password",
-        "topic": "q-engage-lite/data"
+        "callback": {
+            "endpoint": "http://localhost:8080",
+            "active_call": true,
+            "timelapse_seconds": 5
+        }
     }
 }

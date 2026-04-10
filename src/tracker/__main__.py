@@ -15,6 +15,8 @@ from .tasks import DetectionTask, TrackTask, ShowResultsTask, StoreTask
 import json
 from datetime import datetime
 import time
+import threading
+import uuid
 from .repositories import DetectionRepositoryInterface, container
 
 
@@ -28,7 +30,7 @@ def get_settings():
         with open('settings.json', 'r') as f:
             user_settings = json.load(f)
         # Deep merge
-        for key in ['app', 'camera', 'event', 'mqtt']:
+        for key in ['app', 'camera', 'event']:
             if key in user_settings:
                 if key in default_settings:
                     default_settings[key].update(user_settings[key])
@@ -37,6 +39,92 @@ def get_settings():
     
     return default_settings
 
+# {
+#     "camera": {
+#         "id": "1"
+#         },
+#     "frames": [
+#         {
+#             "framenumber": 28431563,
+#             "time": 1774170390015,
+#             "objects": [
+#                 {
+#                     "track_id": 86407,
+#                     "type": "PERSON",
+#                     "gender": "MALE",
+#                     "position": [5.21,0.8]
+#                 },
+#                 {
+#                     "track_id": 86400,
+#                     "type": "PERSON",
+#                     "gender": "MALE",
+#                     "position": [4.76, 0.52]
+#                 }
+#             ]
+#         }
+#     ]
+# }
+def format_payload(camera_id, detections, batch_interval=2):
+    payload = {
+        "camera": {
+            "id": camera_id
+        },
+        "frames": []
+    }
+
+    batches = {}
+    for det in detections:
+        timestamp = datetime.fromisoformat(det['created_at']).timestamp()
+        batch_key = int(timestamp // batch_interval) * batch_interval
+        
+        if batch_key not in batches:
+            batches[batch_key] = []
+        
+        batches[batch_key].append({
+            "track_id": det['track_id'],
+            "type": "PERSON",
+            "position": det['track_position']
+        })
+    
+    for batch_timestamp, objects in sorted(batches.items()):
+        frame_data = {
+            "framenumber": str(uuid.uuid4()),
+            "time": int(batch_timestamp * 1000),
+            "objects": objects
+        }
+        payload["frames"].append(frame_data)
+    
+    return payload
+
+
+def send_request(settings, data):
+    """Send request asynchronously in background thread."""
+    def _send():
+        url = settings['event']['callback']['endpoint']
+        if not url:
+            print("✗ No event endpoint configurdata")
+            return
+        
+        try:
+            response = requests.post(
+                url,
+                json = format_payload(
+                    settings['camera']['id'],
+                    data
+                ),
+                timeout=5
+            )
+            if response.status_code == 200:
+                print(f"✓ Successfully sent data to {url}")
+            else:
+                print(f"✗ Failed to send data to {url}, status code: {response.status_code}")
+        except Exception as e:
+            print(f"✗ Error sending request to {url}: {e}", file=sys.stderr)
+    
+    _send()
+    # Run in background thread
+    # thread = threading.Thread(target=_send, daemon=True)
+    # thread.start()
 
 def main():
     """
@@ -84,8 +172,9 @@ def main():
         print("✓ Connected to video stream")
         
         i = 0
-        timelapse_seconds = settings['camera']['frame_rate'] * 10
-        dtime = datetime.now()
+        timelapse_seconds = settings['event']["callback"]['timelapse_seconds']
+        active_call = settings['event']['callback']['active_call']
+        dtime = time.time()
         frametimer = time.time()
         repo: DetectionRepositoryInterface = container.get(DetectionRepositoryInterface)
 
@@ -120,7 +209,7 @@ def main():
                 # For video files, process every Nth frame instead
                 if not is_file_source and (now - last_time) < frame_interval:
                     continue
-                
+
                 # For files, skip frames by counter to control processing rate
                 if is_file_source and frame_count % 15 != 0:  # Process every 15th frame for files
                     continue
@@ -140,6 +229,11 @@ def main():
                             repo.insert((track_id, position))
 
                     frametimer = time.time()
+
+                if active_call and (time.time() - dtime) >= timelapse_seconds:
+                    detections = repo.getall()
+                    send_request(settings, detections)
+                    dtime = time.time()
 
                 # Check for 'q' key press (only if GUI is available)
                 key = cv2.waitKey(1) & 0xFF
@@ -161,7 +255,6 @@ def main():
         print(f"Error at file {file} line {line}: {e}", file=sys.stderr)
     finally:
         print("✓ Tracker module stopped")
-
 
 if __name__ == "__main__":
     main()
