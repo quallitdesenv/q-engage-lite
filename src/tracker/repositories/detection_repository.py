@@ -39,3 +39,10 @@ class DetectionRepository(DetectionRepositoryInterface):
         rows = cursor.fetchall()
         conn.close()
         return [{'id': row[0], 'track_id': row[1], 'track_position': json.loads(row[2]), 'created_at': row[3]} for row in rows]
+
+    def clear(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM detections')
+        conn.commit()
+        conn.close()

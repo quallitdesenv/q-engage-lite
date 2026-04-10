@@ -9,3 +9,7 @@ class DetectionRepositoryInterface(ABC):
     @abstractmethod
     def getall(self):
         pass
+
+    @abstractmethod
+    def clear(self):
+        pass

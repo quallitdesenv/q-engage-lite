@@ -230,9 +230,12 @@ def main():
 
                     frametimer = time.time()
 
-                if active_call and (time.time() - dtime) >= timelapse_seconds:
-                    detections = repo.getall()
-                    send_request(settings, detections)
+                if (time.time() - dtime) >= timelapse_seconds:
+                    if active_call:
+                        detections = repo.getall()
+                        send_request(settings, detections)
+                        repo.clear()
+                    
                     dtime = time.time()
 
                 # Check for 'q' key press (only if GUI is available)
