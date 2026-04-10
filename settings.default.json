@@ -21,12 +21,19 @@
         },
         "store": {
             "timelapse_seconds": 10
+        },
+        "tracker": {
+            "max_age": 70,
+            "min_hits": 3,
+            "iou_threshold": 0.25,
+            "feature_weight": 0.7,
+            "min_feature_similarity": 0.65
         }
     },
     "camera" : {
         "id": "1",
         "resolution": "640x480",
-        "frame_rate": 0.9,
+        "frame_rate": 0.06,
         "night_vision": true,
         "motion_detection": true,
         "rtsp_url": "./tests/samples/video/security-footage-people-walking-shopping-footage-070595440_main_xxl.mp4",

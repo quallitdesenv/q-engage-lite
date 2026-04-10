@@ -53,6 +53,7 @@ dev = [
 [project.scripts]
 q-engage-tracker = "src.tracker.__main__:main"
 q-engage-service = "src.service.__main__:main"
+tracker = "src.tracker.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

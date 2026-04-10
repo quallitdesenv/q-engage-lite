@@ -6,6 +6,8 @@ import torchvision.transforms as transforms
 from torchvision.models import mobilenet_v2
 from pathlib import Path
 from typing import Dict, Tuple
+import json
+import os
 from src.core import Task
 
 
@@ -110,14 +112,14 @@ class FeatureExtractor:
 
 
 class DeepSORTTracker:
-    """Simple DeepSORT tracker implementation."""
+    """Simple DeepSORT tracker implementation with motion prediction."""
     
-    def __init__(self, max_age: int = 30, min_hits: int = 1, iou_threshold: float = 0.3):
+    def __init__(self, max_age: int = 70, min_hits: int = 3, iou_threshold: float = 0.25):
         self.tracks: Dict[int, dict] = {}
         self.next_id = 1
-        self.max_age = max_age
-        self.min_hits = min_hits
-        self.iou_threshold = iou_threshold
+        self.max_age = max_age  # Increased from 30 to handle occlusions better
+        self.min_hits = min_hits  # Increased from 1 to reduce false IDs
+        self.iou_threshold = iou_threshold  # Slightly lowered for better matching
         self.feature_extractor = FeatureExtractor()
     
     def update(self, detections: list, frame: np.ndarray) -> list:
@@ -135,23 +137,36 @@ class DeepSORTTracker:
         detection_crops = [self._crop_bbox(frame, bbox) for bbox in detections]
         detection_features = self.feature_extractor.extract_features_batch(detection_crops)
         
+        # Predict new positions for existing tracks with motion estimation
+        for track_id in self.tracks:
+            if 'velocity' in self.tracks[track_id]:
+                # Simple linear motion prediction
+                bbox = self.tracks[track_id]['bbox']
+                velocity = self.tracks[track_id]['velocity']
+                predicted_bbox = bbox + velocity
+                self.tracks[track_id]['predicted_bbox'] = predicted_bbox
+            else:
+                self.tracks[track_id]['predicted_bbox'] = self.tracks[track_id]['bbox']
+        
         # Update existing tracks
         matched_tracks = []
         matched_det_indices = set()
         matched_track_ids = set()
         
         if self.tracks:
-            # Simple matching based on IoU and feature similarity
+            # Build cost matrix for Hungarian algorithm (simplified greedy version)
+            matches = []
+            
             for det_idx in range(len(detections)):
                 best_match = None
                 best_score = 0
                 
                 for track_id, track in self.tracks.items():
-                    if track['time_since_update'] > 0:
-                        continue
+                    # Use predicted position for IoU calculation
+                    predicted_bbox = track.get('predicted_bbox', track['bbox'])
                     
-                    # Calculate IoU
-                    iou = self._calculate_iou(detections[det_idx], track['bbox'])
+                    # Calculate IoU with predicted position
+                    iou = self._calculate_iou(detections[det_idx], predicted_bbox)
                     
                     # Calculate feature similarity (cosine similarity)
                     feat_sim = self._cosine_similarity(
@@ -159,21 +174,47 @@ class DeepSORTTracker:
                         track['features']
                     )
                     
-                    # Combined score
-                    score = 0.5 * iou + 0.5 * feat_sim
+                    # Combined score with higher weight on appearance for re-identification
+                    # IoU 30%, Feature 70% for better re-ID after occlusion
+                    score = 0.3 * iou + 0.7 * feat_sim
                     
-                    if score > best_score and iou > self.iou_threshold:
+                    # Require minimum IoU OR high feature similarity for long-lost tracks
+                    if track['time_since_update'] > 5:
+                        # For tracks lost for a while, rely more on features
+                        min_feat_sim = 0.6
+                        if feat_sim > min_feat_sim:
+                            score = feat_sim
+                    
+                    if score > best_score and (iou > self.iou_threshold or feat_sim > 0.65):
                         best_score = score
                         best_match = track_id
                 
                 if best_match is not None:
+                    matches.append((det_idx, best_match, best_score))
+            
+            # Sort by score and apply greedy matching
+            matches.sort(key=lambda x: x[2], reverse=True)
+            
+            for det_idx, track_id, score in matches:
+                if det_idx not in matched_det_indices and track_id not in matched_track_ids:
+                    # Calculate velocity (motion estimation)
+                    old_bbox = self.tracks[track_id]['bbox']
+                    new_bbox = detections[det_idx]
+                    velocity = new_bbox - old_bbox
+                    
                     # Update matched track
-                    self.tracks[best_match]['bbox'] = detections[det_idx]
-                    self.tracks[best_match]['features'] = detection_features[det_idx]
-                    self.tracks[best_match]['hits'] += 1
-                    self.tracks[best_match]['time_since_update'] = 0
+                    self.tracks[track_id]['bbox'] = new_bbox
+                    self.tracks[track_id]['velocity'] = velocity
+                    # Exponential moving average for features (smoother updates)
+                    alpha = 0.3  # Update weight
+                    self.tracks[track_id]['features'] = (
+                        alpha * detection_features[det_idx] + 
+                        (1 - alpha) * self.tracks[track_id]['features']
+                    )
+                    self.tracks[track_id]['hits'] += 1
+                    self.tracks[track_id]['time_since_update'] = 0
                     matched_det_indices.add(det_idx)
-                    matched_track_ids.add(best_match)
+                    matched_track_ids.add(track_id)
         
         # Create new tracks for unmatched detections
         unmatched_detections = [i for i in range(len(detections)) if i not in matched_det_indices]
@@ -263,13 +304,46 @@ class TrackTask(Task):
     def __init__(self):
         self.frame = None
         
-        # Initialize tracker once
+        # Initialize tracker once with settings from config
         if TrackTask._tracker is None:
+            # Load settings
+            settings = self._load_settings()
+            tracker_config = settings.get('app', {}).get('tracker', {})
+            
             TrackTask._tracker = DeepSORTTracker(
-                max_age=30,
-                min_hits=1,
-                iou_threshold=0.3
+                max_age=tracker_config.get('max_age', 70),
+                min_hits=tracker_config.get('min_hits', 3),
+                iou_threshold=tracker_config.get('iou_threshold', 0.25)
             )
+            print(f"✓ Tracker initialized: max_age={TrackTask._tracker.max_age}, "
+                  f"min_hits={TrackTask._tracker.min_hits}, "
+                  f"iou_threshold={TrackTask._tracker.iou_threshold}")
+    
+    def _load_settings(self):
+        """Load settings from JSON file."""
+        # Load default settings first
+        default_path = 'settings.default.json'
+        if os.path.exists(default_path):
+            with open(default_path, 'r') as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+        
+        # Override with user settings if exists
+        user_path = 'settings.json'
+        if os.path.exists(user_path):
+            with open(user_path, 'r') as f:
+                user_settings = json.load(f)
+                # Deep merge
+                for key in ['app', 'camera', 'event', 'mqtt']:
+                    if key in user_settings:
+                        if key in settings:
+                            if isinstance(settings[key], dict):
+                                settings[key].update(user_settings[key])
+                        else:
+                            settings[key] = user_settings[key]
+        
+        return settings
     
     def run(self, bag=None):
         """

@@ -6,6 +6,7 @@ import os
 import sys
 import cv2
 from cv2.typing import MatLike
+import requests
 from ultralytics import YOLO
 import numpy as np
 from src.core import Pipeline, Connector
@@ -13,126 +14,39 @@ from src.core.utils.memory_storage import MemoryStorage
 from .tasks import DetectionTask, TrackTask, ShowResultsTask, StoreTask
 import json
 from datetime import datetime
-import threading
-import queue
+import time
+from .repositories import DetectionRepositoryInterface, container
 
 
 def get_settings():
-    filename = 'settings.json' if os.path.exists('settings.json') else 'settings.default.json'
-    with open(filename, 'r') as f:
-        settings = json.load(f)
+    # Load default settings first
+    with open('settings.default.json', 'r') as f:
+        default_settings = json.load(f)
+    
+    # Override with settings.json if exists
+    if os.path.exists('settings.json'):
+        with open('settings.json', 'r') as f:
+            user_settings = json.load(f)
+        # Deep merge
+        for key in ['app', 'camera', 'event', 'mqtt']:
+            if key in user_settings:
+                if key in default_settings:
+                    default_settings[key].update(user_settings[key])
+                else:
+                    default_settings[key] = user_settings[key]
+    
+    return default_settings
 
-    return {
-        "app": {
-            "name": settings.get("app",{}).get("name", "Q-Engage Lite - Tracker Module"),
-            "version": settings.get("app",{}).get("version", "1.0.0"),
-            "description": settings.get("app",{}).get("description", "AI-powered edge detection and object tracking using YOLO (Ultralytics)"),
-            "author": settings.get("app",{}).get("author", "Quallity Solutions"),
-            "license": settings.get("app",{}).get("license", "MIT"),
-            "model": {
-                "name": settings.get("app", {}).get("model", {}).get("name", "ssci_v2"),
-                "version": settings.get("app", {}).get("model", {}).get("version", "2.0"),
-                "description": settings.get("app", {}).get("model", {}).get("description", "State-of-the-art model for accurate people counting and demographic analysis."),
-                "pretrained": settings.get("app", {}).get("model", {}).get("pretrained", True),
-                "source": settings.get("app", {}).get("model", {}).get("source", "./pretrained/ssci_v2.pt")
-            },
-            "classifier": {
-                "name": settings.get("app", {}).get("classifier", {}).get("name", "gender_classifier"),
-                "version": settings.get("app", {}).get("classifier", {}).get("version", "1.0"),
-                "description": settings.get("app", {}).get("classifier", {}).get("description", "A simple gender classification model based on a lightweight CNN architecture."),
-                "pretrained": settings.get("app", {}).get("classifier", {}).get("pretrained", True),
-                "source": settings.get("app", {}).get("classifier", {}).get("source", "./pretrained/gender_classifier_v1.pt")
-            },
-            "event": {
-                "driver": settings.get("event",{}).get("driver", "local"),
-                "path": settings.get("event",{}).get("path", "./tmp/events")
-            },
-            "store": {
-                "timelapse_seconds": settings.get("app",{}).get("store",{}).get("timelapse_seconds", 10)
-            },
-        },
-        "camera": {
-            "id": settings.get("camera",{}).get("id", "1"),
-            "resolution": settings.get("camera",{}).get("resolution", "1080p"),
-            "frame_rate": settings.get("camera",{}).get("frame_rate", 30),
-            "night_vision": settings.get("camera",{}).get("night_vision", True),
-            "motion_detection": settings.get("camera",{}).get("motion_detection", True),
-            "rtsp_url": settings.get("camera",{}).get("rtsp_url", ""),
-            "gstream": settings.get("camera",{}).get("gstream", False)
-        }
-    }
-
-# Global queue for async batch storage
-batch_queue = queue.Queue(maxsize=100)
-storage_thread = None
-
-def batch_storage_worker():
-    """Worker thread that handles async batch storage to disk."""
-    while True:
-        try:
-            item = batch_queue.get()
-            if item is None:  # Poison pill to stop the worker
-                break
-            
-            camera_id, fnum, timestamp, batch = item
-            
-            # Write to disk (non-blocking for main thread)
-            filepath = f'./tmp/batch_{camera_id}_{fnum}_{timestamp}.json'
-            with open(filepath, 'w') as f:
-                json.dump(batch, f, indent=4)
-            
-            batch_queue.task_done()
-        except Exception as e:
-            print(f"Error in storage worker: {e}", file=sys.stderr)
-
-def store_batch(camera_id: str, fnum: int, timestamp: int):
-    """Store batch asynchronously - non-blocking operation."""
-    batch = {
-        "camera": {
-            "id": camera_id
-        },
-        "frames": [
-            {
-                "framenumber": fnum,
-                "time": timestamp,
-                "objects": [
-                    {
-                        "track_id": track_id,
-                        "type": "PERSON",
-                        "gender": gender.upper(),
-                        "position": position
-                    }
-                ]
-            } for track_id, position, gender in MemoryStorage.slots
-        ]
-    }
-    MemoryStorage.slots.clear()
-
-    MemoryStorage.save_batch(timestamp, batch)
-
-    # Add to async queue instead of blocking write
-    try:
-        batch_queue.put_nowait((camera_id, fnum, timestamp, batch))
-        print(f"Batch queued: camera={camera_id} frame={fnum} time={timestamp} objects={len(batch['frames'][0]['objects'])}")
-    except queue.Full:
-        print(f"Warning: Batch queue full, dropping batch {fnum}", file=sys.stderr)
 
 def main():
     """
     Main entry point for the tracker module.
     Initializes AI model and processes video stream for edge detection and tracking.
     """
-    global storage_thread
-    
     settings = get_settings()
     print(f"{settings['app']['name']} v{settings['app']['version']}")
     print(settings['app']['description'])
     print("Initializing AI Edge Detector...")
-    
-    # Start async storage worker thread
-    storage_thread = threading.Thread(target=batch_storage_worker, daemon=True)
-    storage_thread.start()
-    print("✓ Async storage worker started")
 
     try:
         resolution = settings['camera']['resolution'].split('x')
@@ -149,10 +63,31 @@ def main():
         connector = Connector(
             type = Connector.StreamType.GSTREAMER if settings['camera']['gstream'] else Connector.StreamType.FFMPEG
         )
-        connector.connect(settings['camera']['rtsp_url'])
+        
+        rtsp_url = settings['camera']['rtsp_url']
+        
+        if not rtsp_url:
+            print("✗ ERROR: rtsp_url is empty. Check settings.json or settings.default.json")
+            return
+        
+        # Convert relative paths to absolute
+        if not rtsp_url.startswith(('http://', 'https://', 'rtsp://', 'rtsps://')):
+            rtsp_url = os.path.abspath(rtsp_url)
+        
+        print(f"Connecting to: {rtsp_url}")
+        connector.connect(rtsp_url)
+        
+        if not connector.isOpened():
+            print("✗ Failed to connect to video stream")
+            return
+        
+        print("✓ Connected to video stream")
+        
         i = 0
         timelapse_seconds = settings['camera']['frame_rate'] * 10
         dtime = datetime.now()
+        frametimer = time.time()
+        repo: DetectionRepositoryInterface = container.get(DetectionRepositoryInterface)
 
         pipeline = Pipeline([
             DetectionTask,
@@ -160,33 +95,62 @@ def main():
             StoreTask,
             ShowResultsTask
         ])
+        
+        desired_fps = 2
+        frame_interval = 1 / desired_fps
+        last_time = time.time()
+        frame_count = 0  # Total frames read from source
+        
+        # Check if source is a file (not a stream)
+        is_file_source = not rtsp_url.startswith(('rtsp://', 'rtsps://', 'http://', 'https://'))
+        print(f"Source type: {'File' if is_file_source else 'Stream'}")
 
         while connector.isOpened():
-            i += 1
+            try:
+                ret, frame = connector.read()
+                frame_count += 1
+                
+                if not ret or frame is None:
+                    print(f"✗ End of stream (total frames read={frame_count}, frames processed={i})")
+                    break
 
-            if i % frame_rate != 0:
-                connector.read()
-                continue
+                now = time.time()
 
-            ret, frame = connector.read()
+                # Skip frames based on time interval ONLY for live streams
+                # For video files, process every Nth frame instead
+                if not is_file_source and (now - last_time) < frame_interval:
+                    continue
+                
+                # For files, skip frames by counter to control processing rate
+                if is_file_source and frame_count % 15 != 0:  # Process every 15th frame for files
+                    continue
 
-            if not ret:
-                break
+                last_time = now
+                i += 1
 
-            img = cv2.resize(frame, (width, height))
+                img = cv2.resize(frame, (width, height))
 
-            pipeline(img, model)
+                pipeline(img, model)
 
-            for track_id, position in MemoryStorage.all('tracks'):
-                gender = MemoryStorage.load('genders', track_id)
-                MemoryStorage.save_slot((track_id, position, gender))
+                if (time.time() - frametimer) >= 0.5:
+                    tracks = list(MemoryStorage.all('tracks'))
+                    if tracks:
+                        print(f"Frame {i}: Detected {len(tracks)} tracks")
+                        for track_id, position in tracks:
+                            repo.insert((track_id, position))
 
-            if (datetime.now() - dtime).total_seconds() >= timelapse_seconds:
-                store_batch(settings['camera']["id"], i, int(datetime.now().timestamp()))
-                dtime = datetime.now()
+                    frametimer = time.time()
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                connector.release()
+                # Check for 'q' key press (only if GUI is available)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("Quit key pressed")
+                    connector.release()
+                    break
+            except Exception as loop_error:
+                print(f"✗ Error in main loop: {loop_error}", file=sys.stderr)
+                import traceback
+                traceback.print_exc()
                 break
 
     except KeyboardInterrupt:
@@ -196,13 +160,8 @@ def main():
         file = sys.exc_info()[-1].tb_frame.f_code.co_filename
         print(f"Error at file {file} line {line}: {e}", file=sys.stderr)
     finally:
-        # Cleanup async storage thread
-        print("Waiting for pending batches to be written...")
-        batch_queue.join()  # Wait for all pending items to be processed
-        batch_queue.put(None)  # Send poison pill
-        if storage_thread:
-            storage_thread.join(timeout=5)
-        print("✓ Storage worker stopped")
+        print("✓ Tracker module stopped")
+
 
 if __name__ == "__main__":
     main()

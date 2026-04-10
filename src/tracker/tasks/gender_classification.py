@@ -7,6 +7,7 @@ class GenderClassificationTask(Task):
     def __init__(self, frame: MatLike, model_path: str):
         self.frame = frame
         self.classificator = GenderClassificator(model_path)
+        self.genders = {}
 
     def run(self, bag=None):
         if bag:
@@ -16,10 +17,11 @@ class GenderClassificationTask(Task):
                 x1, y1, x2, y2 = map(int, box[:4])  # Handle possible extra values
                 person_img = self.frame[y1:y2, x1:x2]
 
-                if MemoryStorage.exists('genders', track_id):
-                    gender = MemoryStorage.load('genders', track_id)
+                if track_id in self.genders:
+                    gender = self.genders[track_id]
                 else:
                     gender = classificator.predict(person_img)
+                    self.genders[track_id] = gender
 
                 new_bag.append((track_id, box, gender))
 
